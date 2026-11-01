@@ -1,0 +1,159 @@
+$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy
+│   │  │                     │
+│   │  │                     └── password hash result
+│   │  └── random salt
+│   └── cost / salt rounds = 10
+└── bcrypt version
+
+
+
+$2b$          → bcrypt version
+
+10            → cost factor / salt rounds
+
+N9qo8uLOickgx2ZMRZoMye
+              → random salt
+
+IjZAgcfl7p92ldGxad68LJZdL17lhWy
+              → hashed result
+
+
+Assign ADMIN
+
+INSERT INTO user_roles (user_id, role_id)
+SELECT
+    u.id,
+    r.id
+FROM users u
+CROSS JOIN roles r
+WHERE u.email = 'admin@example.com'
+  AND r.name = 'ADMIN'
+ON CONFLICT DO NOTHING
+RETURNING user_id, role_id;
+
+JWT = login proof
+
+Payload = user info အနည်းငယ်
+
+Signature = token မပြောင်းထားကြောင်း verify
+
+jwt.sign()
+→ token create
+
+jwt.verify()
+→ token valid မ valid စစ်
+
+server.ts က application ရဲ့ main entry point ပါ။
+Express app create
+↓
+Global middleware setup
+↓
+Main routes connect
+↓
+Server start
+
+userRoutes.ts က User Management API endpoints တွေကို handle လုပ်တယ်။
+GET    /api/users
+GET    /api/users/:id
+POST   /api/users
+PUT    /api/users/:id
+DELETE /api/users/:id
+
+responsibility က—
+Request ရောက်လာ
+↓
+Authentication စစ်
+↓
+Permission စစ်
+↓
+Request data ယူ
+↓
+Validation လုပ်
+↓
+Service ကိုခေါ်
+↓
+HTTP response ပြန်
+
+userService.ts က actual user-related work လုပ်တဲ့နေရာပါ။
+Database query
+Password hashing
+Transaction
+Create user
+Update user
+Delete user
+Get users  တွေကို handle လုပ်တယ်။
+
+userRoutes.ts
+"User ID 123 ကိုရှာပေး"
+
+        ↓
+
+userService.ts
+"OK, database ကို query လုပ်မယ်"
+
+Client / Postman
+      ↓
+server.ts
+      ↓
+/api/users → userRoutes
+      ↓
+userRoutes.ts
+      ↓
+authenticate
+      ↓
+authorize("users.read")
+      ↓
+getAllUsers()
+      ↓
+userService.ts
+      ↓
+SQL Query
+      ↓
+Supabase PostgreSQL
+      ↓
+Users data
+      ↓
+userService.ts
+      ↓
+userRoutes.ts
+      ↓
+JSON Response
+
+server.ts
+= Reception
+
+userRoutes.ts
+= Manager
+
+userService.ts
+= Worker
+
+Database
+= Storage
+
+server.ts
+→ App setup + route wiring
+
+authRoutes.ts
+→ Login/Profile HTTP requests
+
+authService.ts
+→ Login business logic
+
+userRoutes.ts
+→ User CRUD HTTP requests
+
+userService.ts
+→ User database/business logic
+
+
+အဓိက နားလည်ရမယ့်အချက်
+
+Express Error Middleware မှာ Parameter ၄ ခုရှိပါတယ်။
+Parameter	ရည်ရွယ်ချက်
+error	ဖြစ်ပေါ်လာတဲ့ Error
+request	HTTP Request
+response	Client ဆီ Response ပြန်ပို့ရန်
+next	နောက် Middleware သို့ ဆက်သွားရန်
+
+ပုံမှန် Middleware နဲ့မတူဘဲ Error Middleware မှာ Parameter ၄ ခု မဖြစ်မနေရှိရပါတယ်။
