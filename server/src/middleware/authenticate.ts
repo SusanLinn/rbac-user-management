@@ -5,45 +5,30 @@ import type {
     Response,
 } from "express";
 
-import {
-    verifyToken,
-} from "../utils/token.js";
+import { verifyToken } from "../utils/token.js";
+import { sendErrorResponse } from "../utils/response.js";
 
-import {
-    sendErrorResponse,
-} from "../utils/response.js";
-
-
-export interface AuthenticatedRequest
-    extends Request {
-
+export interface AuthenticatedRequest extends Request {
     user?: {
         userId: string;
         email: string;
-        role: "ADMIN" | "USER";
+        role: string;
     };
 }
-
 
 export const authenticate = (
     request: AuthenticatedRequest,
     response: Response,
     next: NextFunction
 ) => {
-
     try {
-
         const authorizationHeader =
             request.headers.authorization;
 
-
         if (
             !authorizationHeader ||
-            !authorizationHeader.startsWith(
-                "Bearer "
-            )
+            !authorizationHeader.startsWith("Bearer ")
         ) {
-
             return sendErrorResponse(
                 response,
                 401,
@@ -51,15 +36,9 @@ export const authenticate = (
             );
         }
 
-
-        const token =
-            authorizationHeader.split(
-                " "
-            )[1];
-
+        const token = authorizationHeader.split(" ")[1];
 
         if (!token) {
-
             return sendErrorResponse(
                 response,
                 401,
@@ -67,23 +46,15 @@ export const authenticate = (
             );
         }
 
-
-        const decodedToken =
-            verifyToken(
-                token
-            );
-
+        const decodedToken = verifyToken(token);
 
         if (
             typeof decodedToken === "string" ||
-            !decodedToken.userId ||
-            !decodedToken.email ||
-            (
-                decodedToken.role !== "ADMIN" &&
-                decodedToken.role !== "USER"
-            )
+            typeof decodedToken.userId !== "string" ||
+            typeof decodedToken.email !== "string" ||
+            typeof decodedToken.role !== "string" ||
+            !decodedToken.role.trim()
         ) {
-
             return sendErrorResponse(
                 response,
                 401,
@@ -91,25 +62,15 @@ export const authenticate = (
             );
         }
 
-
         request.user = {
-            userId:
-                decodedToken.userId,
-
-            email:
-                decodedToken.email,
-
-            role:
-                decodedToken.role,
+            userId: decodedToken.userId,
+            email: decodedToken.email,
+            role: decodedToken.role,
         };
-
 
         next();
 
-    } catch (
-        error
-    ) {
-
+    } catch (error) {
         return sendErrorResponse(
             response,
             401,

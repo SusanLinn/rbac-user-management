@@ -21,6 +21,8 @@ import {
 
 import { errorHandler } from "./middleware/errorHandler.js";
 
+import roleRoutes from "./routes/roleRoutes.js";
+
 const app =
     express();
 
@@ -99,6 +101,8 @@ app.use(
     userRoutes
 );
 
+// Role Management Routes
+app.use("/api/roles", roleRoutes);
 
 // Error handling middleware
 app.use(errorHandler);

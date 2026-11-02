@@ -1,4 +1,3 @@
-
 import {
     useCallback,
     useEffect,
@@ -25,7 +24,7 @@ import FormFieldError, {
 } from "../components/FormFieldError";
 
 
-type UserRole = "ADMIN" | "USER";
+type UserRole = string;
 
 
 interface User {
@@ -41,6 +40,16 @@ interface User {
 interface UsersResponse {
     success: boolean;
     users: User[];
+}
+
+interface RoleOption {
+    id: string;
+    name: string;
+}
+
+interface RolesResponse {
+    success: boolean;
+    roles: RoleOption[];
 }
 
 interface ProfileResponse {
@@ -140,6 +149,11 @@ const DashboardPage = () => {
     // Admin permission
     const isAdmin = currentUserRole === "ADMIN";
 
+    // Roles are loaded from the database (not hard-coded).
+    const [availableRoles, setAvailableRoles] = useState<RoleOption[]>([]);
+    const [rolesLoading, setRolesLoading] = useState(false);
+    const [rolesError, setRolesError] = useState("");
+
 
     const [showCreateForm, setShowCreateForm] = useState(false);
 
@@ -181,10 +195,7 @@ const DashboardPage = () => {
 
             const role = response.data.user?.role;
 
-            if (
-                role !== "ADMIN" &&
-                role !== "USER"
-            ) {
+            if (typeof role !== "string" || !role.trim()) {
                 setCurrentUserRole(null);
                 setProfileError("Unable to verify your user role.");
                 return;
@@ -281,6 +292,52 @@ const DashboardPage = () => {
         void fetchUsers();
     }, [fetchProfile, fetchUsers]);
 
+    useEffect(() => {
+        if (!isAdmin) {
+            setAvailableRoles([]);
+            return;
+        }
+
+        let cancelled = false;
+
+        const fetchRoles = async () => {
+            setRolesLoading(true);
+            setRolesError("");
+
+            try {
+                const response = await api.get<RolesResponse>("/roles");
+
+                if (!cancelled) {
+                    setAvailableRoles(response.data.roles);
+                    setNewUser((current) => ({
+                        ...current,
+                        role: response.data.roles.some((r) => r.name === current.role)
+                            ? current.role
+                            : response.data.roles.find((r) => r.name === "USER")?.name
+                                ?? response.data.roles[0]?.name
+                                ?? "",
+                    }));
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setAvailableRoles([]);
+                    const message = axios.isAxiosError(error)
+                        ? error.response?.data?.message
+                        : undefined;
+                    setRolesError(message || "Failed to load roles.");
+                }
+            } finally {
+                if (!cancelled) setRolesLoading(false);
+            }
+        };
+
+        void fetchRoles();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [isAdmin]);
+
 
     // Search users
     const filteredUsers = useMemo(() => {
@@ -311,6 +368,11 @@ const DashboardPage = () => {
         if (currentUserRole !== "ADMIN") return;
 
         setCreateError("");
+
+        if (!availableRoles.some((role) => role.name === newUser.role)) {
+            setCreateError("Please select a valid role.");
+            return;
+        }
 
         // Validate fields
         const errors: CreateUserErrors = {};
@@ -351,7 +413,9 @@ const DashboardPage = () => {
                 fullName: "",
                 email: "",
                 password: "",
-                role: "USER",
+                role: availableRoles.find((role) => role.name === "USER")?.name
+                    ?? availableRoles[0]?.name
+                    ?? "",
             });
 
             setFieldErrors({});
@@ -383,6 +447,11 @@ const DashboardPage = () => {
             currentUserRole !== "ADMIN" ||
             !editingUser
         ) return;
+
+        if (!availableRoles.some((role) => role.name === editingUser.role)) {
+            setEditError("Please select a valid role.");
+            return;
+        }
 
         const errors: EditUserErrors = {};
 
@@ -513,6 +582,11 @@ const DashboardPage = () => {
 
 
             <main className="mx-auto max-w-7xl px-6 py-8">
+                {isAdmin && rolesError && (
+                    <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
+                        {rolesError}
+                    </p>
+                )}
 
                 {/* Page Title */}
                 <div className="mb-8">
@@ -696,7 +770,7 @@ const DashboardPage = () => {
 
                                                 <td className="px-6 py-4">
                                                     <span
-                                                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                                                        className={`inline-flex whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold ${
                                                             user.role === "ADMIN"
                                                                 ? "bg-purple-100 text-purple-700"
                                                                 : "bg-blue-100 text-blue-700"
@@ -906,6 +980,7 @@ const DashboardPage = () => {
 
                                 <select
                                     value={newUser.role}
+                                    disabled={rolesLoading || availableRoles.length === 0}
                                     onChange={(event) =>
                                         setNewUser((current) => ({
                                             ...current,
@@ -914,8 +989,14 @@ const DashboardPage = () => {
                                     }
                                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 >
-                                    <option value="USER">USER</option>
-                                    <option value="ADMIN">ADMIN</option>
+                                    <option value="" disabled>
+                                        {rolesLoading ? "Loading roles..." : "Select a role"}
+                                    </option>
+                                    {availableRoles.map((role) => (
+                                        <option key={role.id} value={role.name}>
+                                            {role.name}
+                                        </option>
+                                    ))}
                                 </select>
                             </div>
 
@@ -942,7 +1023,7 @@ const DashboardPage = () => {
 
                                 <button
                                     type="submit"
-                                    disabled={creating}
+                                    disabled={creating || rolesLoading || availableRoles.length === 0}
                                     className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {creating
@@ -1047,6 +1128,7 @@ const DashboardPage = () => {
 
                                 <select
                                     value={editingUser.role}
+                                    disabled={rolesLoading || availableRoles.length === 0}
                                     onChange={(event) =>
                                         setEditingUser({
                                             ...editingUser,
@@ -1055,8 +1137,14 @@ const DashboardPage = () => {
                                     }
                                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 >
-                                    <option value="USER">USER</option>
-                                    <option value="ADMIN">ADMIN</option>
+                                    <option value="" disabled>
+                                        {rolesLoading ? "Loading roles..." : "Select a role"}
+                                    </option>
+                                    {availableRoles.map((role) => (
+                                        <option key={role.id} value={role.name}>
+                                            {role.name}
+                                        </option>
+                                    ))}
                                 </select>
                             </div>
 
@@ -1105,7 +1193,7 @@ const DashboardPage = () => {
 
                                 <button
                                     type="submit"
-                                    disabled={updating}
+                                    disabled={updating || rolesLoading || availableRoles.length === 0}
                                     className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {updating
