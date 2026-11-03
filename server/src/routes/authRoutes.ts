@@ -15,6 +15,7 @@ import {
     sendErrorResponse,
 } from "../utils/response.js";
 
+import { getUserPermissions } from "../services/permissionService.js";
 
 const router =
     Router();
@@ -114,29 +115,50 @@ router.post(
 );
 
 
+
 router.get(
     "/profile",
     authenticate,
-    (
+    async (
         request: AuthenticatedRequest,
         response
     ) => {
+        try {
+            const user = request.user;
 
-        return response
-            .status(
-                200
-            )
-            .json({
+            if (!user) {
+                return sendErrorResponse(
+                    response,
+                    401,
+                    "Unauthorized"
+                );
+            }
+
+            const permissions = await getUserPermissions(
+                user.userId
+            );
+
+            return response.status(200).json({
                 success: true,
-
-                message:
-                    "Protected profile accessed",
-
-                user:
-                    request.user,
+                message: "Protected profile accessed",
+                user: {
+                    ...user,
+                    permissions,
+                },
             });
+
+        } catch (error) {
+            console.error("Profile failed:", error);
+
+            return sendErrorResponse(
+                response,
+                500,
+                "Internal server error"
+            );
+        }
     }
 );
+
 
 
 export default router;

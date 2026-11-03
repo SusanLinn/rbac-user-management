@@ -1,3 +1,4 @@
+
 import {
     useCallback,
     useEffect,
@@ -5,27 +6,19 @@ import {
     useState,
 } from "react";
 
-import type {
-    FormEvent,
-} from "react";
-
-import {
-    useNavigate,
-} from "react-router-dom";
-
+import type { FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import axios from "axios";
 
-import {
-    api,
-} from "../api/axios";
+import { api } from "../api/axios";
 
 import FormFieldError, {
     ERROR_MESSAGES,
 } from "../components/FormFieldError";
 
+// ==================== TYPES ====================
 
 type UserRole = string;
-
 
 interface User {
     id: string;
@@ -58,6 +51,7 @@ interface ProfileResponse {
         userId: string;
         email: string;
         role: UserRole;
+        permissions: string[];
     };
 }
 
@@ -93,8 +87,8 @@ interface CreateUserErrors {
     password?: string;
 }
 
+// ==================== CACHE ====================
 
-// Get cached summary
 const getCachedSummary = (): DashboardSummary => {
     const cached = sessionStorage.getItem("dashboardSummary");
 
@@ -121,9 +115,12 @@ const getCachedSummary = (): DashboardSummary => {
     };
 };
 
+// ==================== DASHBOARD ====================
 
 const DashboardPage = () => {
     const navigate = useNavigate();
+
+    // ==================== USERS ====================
 
     const [users, setUsers] = useState<User[]>([]);
 
@@ -131,34 +128,53 @@ const DashboardPage = () => {
         useState<DashboardSummary>(getCachedSummary);
 
     const [search, setSearch] = useState("");
-
     const [loading, setLoading] = useState(true);
-
     const [error, setError] = useState("");
 
     const [successMessage, setSuccessMessage] = useState("");
+    const [actionError, setActionError] = useState("");
 
-    // Current logged-in user role
+    // ==================== AUTHENTICATION ====================
+
     const [currentUserRole, setCurrentUserRole] =
         useState<UserRole | null>(null);
 
     const [profileLoading, setProfileLoading] = useState(true);
-
     const [profileError, setProfileError] = useState("");
 
-    // Admin permission
+    const [permissions, setPermissions] = useState<string[]>([]);
+
+    // ==================== RBAC PERMISSIONS ====================
+
+    const canRead = permissions.includes("users.read");
+    const canCreate = permissions.includes("users.create");
+    const canUpdate = permissions.includes("users.update");
+    const canDelete = permissions.includes("users.delete");
+
+    const canManageUsers = canUpdate || canDelete;
+
+    // Only ADMIN can assign the ADMIN role.
     const isAdmin = currentUserRole === "ADMIN";
 
-    // Roles are loaded from the database (not hard-coded).
-    const [availableRoles, setAvailableRoles] = useState<RoleOption[]>([]);
+    // ==================== ROLES ====================
+
+    const [availableRoles, setAvailableRoles] =
+        useState<RoleOption[]>([]);
+
     const [rolesLoading, setRolesLoading] = useState(false);
     const [rolesError, setRolesError] = useState("");
 
+    // Filter ADMIN from the dropdown for all non-ADMIN roles.
+    const assignableRoles = useMemo(() => {
+        return availableRoles.filter(
+            (role) => isAdmin || role.name !== "ADMIN"
+        );
+    }, [availableRoles, isAdmin]);
+
+    // ==================== CREATE USER ====================
 
     const [showCreateForm, setShowCreateForm] = useState(false);
-
     const [creating, setCreating] = useState(false);
-
     const [createError, setCreateError] = useState("");
 
     const [newUser, setNewUser] = useState<NewUser>({
@@ -168,6 +184,11 @@ const DashboardPage = () => {
         role: "USER",
     });
 
+    const [fieldErrors, setFieldErrors] =
+        useState<CreateUserErrors>({});
+
+    // ==================== EDIT USER ====================
+
     const [editingUser, setEditingUser] =
         useState<EditUserForm | null>(null);
 
@@ -175,34 +196,56 @@ const DashboardPage = () => {
         useState<EditUserErrors>({});
 
     const [editError, setEditError] = useState("");
-
     const [updating, setUpdating] = useState(false);
+
+    // ==================== DELETE USER ====================
 
     const [deletingUserId, setDeletingUserId] =
         useState<string | null>(null);
 
-    const [actionError, setActionError] = useState("");
+    // ==================== HELPERS ====================
 
-    const [fieldErrors, setFieldErrors] =
-        useState<CreateUserErrors>({});
+    const getDefaultRole = useCallback(
+        (roles: RoleOption[]): string => {
+            return (
+                roles.find((role) => role.name === "USER")?.name ??
+                roles[0]?.name ??
+                ""
+            );
+        },
+        []
+    );
 
+    // ==================== FETCH PROFILE ====================
 
-    // Fetch current user profile
     const fetchProfile = useCallback(async () => {
         try {
+            setProfileLoading(true);
+            setProfileError("");
+            setCurrentUserRole(null);
+            setPermissions([]);
+
             const response =
                 await api.get<ProfileResponse>("/auth/profile");
 
-            const role = response.data.user?.role;
+            const profile = response.data.user;
+            const role = profile?.role;
 
             if (typeof role !== "string" || !role.trim()) {
-                setCurrentUserRole(null);
                 setProfileError("Unable to verify your user role.");
                 return;
             }
 
             setCurrentUserRole(role);
-            setProfileError("");
+
+            setPermissions(
+                Array.isArray(profile.permissions)
+                    ? profile.permissions.filter(
+                        (permission): permission is string =>
+                            typeof permission === "string"
+                    )
+                    : []
+            );
 
         } catch (error) {
             if (
@@ -229,27 +272,25 @@ const DashboardPage = () => {
         }
     }, [navigate]);
 
+    // ==================== FETCH USERS ====================
 
-    // Fetch users
     const fetchUsers = useCallback(async () => {
         try {
             setLoading(true);
             setError("");
 
-            const response = await api.get<UsersResponse>("/users");
+            const response =
+                await api.get<UsersResponse>("/users");
 
             const fetchedUsers = response.data.users;
 
             setUsers(fetchedUsers);
 
-            // Calculate summary
             const newSummary: DashboardSummary = {
                 totalUsers: fetchedUsers.length,
-
                 activeUsers: fetchedUsers.filter(
                     (user) => user.is_active
                 ).length,
-
                 inactiveUsers: fetchedUsers.filter(
                     (user) => !user.is_active
                 ).length,
@@ -257,7 +298,6 @@ const DashboardPage = () => {
 
             setSummary(newSummary);
 
-            // Save summary
             sessionStorage.setItem(
                 "dashboardSummary",
                 JSON.stringify(newSummary)
@@ -286,14 +326,17 @@ const DashboardPage = () => {
         }
     }, [navigate]);
 
+    // ==================== INITIAL LOAD ====================
 
     useEffect(() => {
         void fetchProfile();
         void fetchUsers();
     }, [fetchProfile, fetchUsers]);
 
+    // ==================== FETCH ROLES ====================
+
     useEffect(() => {
-        if (!isAdmin) {
+        if (profileLoading || (!canCreate && !canUpdate)) {
             setAvailableRoles([]);
             return;
         }
@@ -305,29 +348,30 @@ const DashboardPage = () => {
             setRolesError("");
 
             try {
-                const response = await api.get<RolesResponse>("/roles");
+                const response =
+                    await api.get<RolesResponse>("/roles");
 
                 if (!cancelled) {
                     setAvailableRoles(response.data.roles);
-                    setNewUser((current) => ({
-                        ...current,
-                        role: response.data.roles.some((r) => r.name === current.role)
-                            ? current.role
-                            : response.data.roles.find((r) => r.name === "USER")?.name
-                                ?? response.data.roles[0]?.name
-                                ?? "",
-                    }));
                 }
+
             } catch (error) {
                 if (!cancelled) {
                     setAvailableRoles([]);
+
                     const message = axios.isAxiosError(error)
                         ? error.response?.data?.message
                         : undefined;
-                    setRolesError(message || "Failed to load roles.");
+
+                    setRolesError(
+                        message || "Failed to load roles."
+                    );
                 }
+
             } finally {
-                if (!cancelled) setRolesLoading(false);
+                if (!cancelled) {
+                    setRolesLoading(false);
+                }
             }
         };
 
@@ -336,10 +380,28 @@ const DashboardPage = () => {
         return () => {
             cancelled = true;
         };
-    }, [isAdmin]);
+    }, [profileLoading, canCreate, canUpdate]);
 
+    // Keep the selected Create role valid after filtering.
+    useEffect(() => {
+        setNewUser((current) => {
+            if (
+                assignableRoles.some(
+                    (role) => role.name === current.role
+                )
+            ) {
+                return current;
+            }
 
-    // Search users
+            return {
+                ...current,
+                role: getDefaultRole(assignableRoles),
+            };
+        });
+    }, [assignableRoles, getDefaultRole]);
+
+    // ==================== SEARCH ====================
+
     const filteredUsers = useMemo(() => {
         const keyword = search.trim().toLowerCase();
 
@@ -351,30 +413,36 @@ const DashboardPage = () => {
             [
                 user.full_name,
                 user.email,
-                user.role,
+                user.role ?? "",
             ].some((value) =>
                 value.toLowerCase().includes(keyword)
             )
         );
     }, [users, search]);
 
+    // ==================== CREATE USER ====================
 
-    // Create user
     const handleCreateUser = async (
         event: FormEvent<HTMLFormElement>
     ) => {
         event.preventDefault();
 
-        if (currentUserRole !== "ADMIN") return;
+        if (!canCreate) return;
 
         setCreateError("");
 
-        if (!availableRoles.some((role) => role.name === newUser.role)) {
-            setCreateError("Please select a valid role.");
+        // Frontend role assignment protection.
+        if (
+            !assignableRoles.some(
+                (role) => role.name === newUser.role
+            )
+        ) {
+            setCreateError(
+                "You cannot assign this role."
+            );
             return;
         }
 
-        // Validate fields
         const errors: CreateUserErrors = {};
 
         if (!newUser.fullName.trim()) {
@@ -384,7 +452,9 @@ const DashboardPage = () => {
         if (!newUser.email.trim()) {
             errors.email = ERROR_MESSAGES.REQUIRED;
         } else if (
-            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newUser.email.trim())
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+                newUser.email.trim()
+            )
         ) {
             errors.email = ERROR_MESSAGES.INVALID_EMAIL;
         }
@@ -395,10 +465,7 @@ const DashboardPage = () => {
 
         setFieldErrors(errors);
 
-        // Stop if validation fails
-        if (Object.keys(errors).length > 0) {
-            return;
-        }
+        if (Object.keys(errors).length > 0) return;
 
         setCreating(true);
         setSuccessMessage("");
@@ -413,9 +480,7 @@ const DashboardPage = () => {
                 fullName: "",
                 email: "",
                 password: "",
-                role: availableRoles.find((role) => role.name === "USER")?.name
-                    ?? availableRoles[0]?.name
-                    ?? "",
+                role: getDefaultRole(assignableRoles),
             });
 
             setFieldErrors({});
@@ -436,20 +501,26 @@ const DashboardPage = () => {
         }
     };
 
+    // ==================== UPDATE USER ====================
 
-    // Update user
     const handleUpdateUser = async (
         event: FormEvent<HTMLFormElement>
     ) => {
         event.preventDefault();
 
-        if (
-            currentUserRole !== "ADMIN" ||
-            !editingUser
-        ) return;
+        if (!canUpdate || !editingUser) return;
 
-        if (!availableRoles.some((role) => role.name === editingUser.role)) {
-            setEditError("Please select a valid role.");
+        setEditError("");
+
+        // Frontend role assignment protection.
+        if (
+            !assignableRoles.some(
+                (role) => role.name === editingUser.role
+            )
+        ) {
+            setEditError(
+                "You cannot assign this role."
+            );
             return;
         }
 
@@ -462,7 +533,9 @@ const DashboardPage = () => {
         if (!editingUser.email.trim()) {
             errors.email = ERROR_MESSAGES.REQUIRED;
         } else if (
-            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(editingUser.email.trim())
+            !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+                editingUser.email.trim()
+            )
         ) {
             errors.email = ERROR_MESSAGES.INVALID_EMAIL;
         }
@@ -472,7 +545,6 @@ const DashboardPage = () => {
         if (Object.keys(errors).length > 0) return;
 
         setUpdating(true);
-        setEditError("");
         setSuccessMessage("");
 
         try {
@@ -494,17 +566,19 @@ const DashboardPage = () => {
                 ? error.response?.data?.message
                 : undefined;
 
-            setEditError(message || "Failed to update user.");
+            setEditError(
+                message || "Failed to update user."
+            );
 
         } finally {
             setUpdating(false);
         }
     };
 
+    // ==================== DELETE USER ====================
 
-    // Delete user
     const handleDeleteUser = async (userId: string) => {
-        if (currentUserRole !== "ADMIN") return;
+        if (!canDelete) return;
 
         const confirmed = window.confirm(
             "Are you sure you want to delete this user?"
@@ -528,15 +602,17 @@ const DashboardPage = () => {
                 ? error.response?.data?.message
                 : undefined;
 
-            setActionError(message || "Failed to delete user.");
+            setActionError(
+                message || "Failed to delete user."
+            );
 
         } finally {
             setDeletingUserId(null);
         }
     };
 
+    // ==================== LOGOUT ====================
 
-    // Logout
     const handleLogout = () => {
         localStorage.removeItem("token");
         sessionStorage.removeItem("dashboardSummary");
@@ -544,6 +620,7 @@ const DashboardPage = () => {
         navigate("/", { replace: true });
     };
 
+    // ==================== UI ====================
 
     return (
         <div className="min-h-screen bg-slate-50">
@@ -563,7 +640,8 @@ const DashboardPage = () => {
 
                         {!profileLoading && currentUserRole && (
                             <p className="mt-1 text-xs text-slate-500">
-                                Role: <span className="font-semibold text-blue-600">
+                                Role:{" "}
+                                <span className="font-semibold text-blue-600">
                                     {currentUserRole}
                                 </span>
                             </p>
@@ -580,15 +658,14 @@ const DashboardPage = () => {
                 </div>
             </header>
 
-
             <main className="mx-auto max-w-7xl px-6 py-8">
-                {isAdmin && rolesError && (
+
+                {(canCreate || canUpdate) && rolesError && (
                     <p className="mb-4 rounded-lg bg-red-50 px-4 py-3 text-sm text-red-600">
                         {rolesError}
                     </p>
                 )}
 
-                {/* Page Title */}
                 <div className="mb-8">
                     <h2 className="text-2xl font-bold text-slate-800">
                         Dashboard
@@ -599,8 +676,6 @@ const DashboardPage = () => {
                     </p>
                 </div>
 
-
-                {/* Profile Status */}
                 {profileLoading && (
                     <p className="mb-4 text-sm text-slate-500">
                         Checking account permissions...
@@ -609,12 +684,12 @@ const DashboardPage = () => {
 
                 {profileError && (
                     <p className="mb-4 rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                        {profileError} Admin actions are hidden until your role can be verified.
+                        {profileError} Actions are hidden until your
+                        permissions can be verified.
                     </p>
                 )}
 
-
-                {/* Summary Cards */}
+                {/* Dashboard Summary */}
                 <div className="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-3">
 
                     <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -649,8 +724,6 @@ const DashboardPage = () => {
 
                 </div>
 
-
-                {/* Success Message */}
                 {successMessage && (
                     <div className="mb-5 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
                         {successMessage}
@@ -663,11 +736,9 @@ const DashboardPage = () => {
                     </p>
                 )}
 
-
                 {/* Users Section */}
                 <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
 
-                    {/* Users Header */}
                     <div className="flex flex-col gap-4 border-b border-slate-200 p-6 sm:flex-row sm:items-center sm:justify-between">
 
                         <div>
@@ -692,7 +763,7 @@ const DashboardPage = () => {
                                 className="w-full rounded-lg border border-slate-300 px-4 py-2 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-64"
                             />
 
-                            {isAdmin && (
+                            {canCreate && (
                                 <button
                                     onClick={() => {
                                         setCreateError("");
@@ -709,7 +780,6 @@ const DashboardPage = () => {
                         </div>
                     </div>
 
-
                     {/* Users Table */}
                     {loading ? (
                         <div className="p-10 text-center text-slate-500">
@@ -719,6 +789,11 @@ const DashboardPage = () => {
                     ) : error ? (
                         <div className="p-10 text-center text-red-600">
                             {error}
+                        </div>
+
+                    ) : !canRead ? (
+                        <div className="p-10 text-center text-amber-700">
+                            You do not have permission to view users.
                         </div>
 
                     ) : (
@@ -734,7 +809,7 @@ const DashboardPage = () => {
                                         <th className="px-6 py-4">Status</th>
                                         <th className="px-6 py-4">Created At</th>
 
-                                        {isAdmin && (
+                                        {canManageUsers && (
                                             <th className="px-6 py-4">
                                                 Actions
                                             </th>
@@ -747,7 +822,7 @@ const DashboardPage = () => {
                                     {filteredUsers.length === 0 ? (
                                         <tr>
                                             <td
-                                                colSpan={isAdmin ? 6 : 5}
+                                                colSpan={canManageUsers ? 6 : 5}
                                                 className="px-6 py-10 text-center text-slate-500"
                                             >
                                                 No users found.
@@ -800,38 +875,64 @@ const DashboardPage = () => {
                                                     ).toLocaleDateString()}
                                                 </td>
 
-                                                {isAdmin && (
+                                                {canManageUsers && (
                                                     <td className="px-6 py-4">
                                                         <div className="flex gap-2">
 
-                                                            <button
-                                                                onClick={() => {
-                                                                    setEditingUser({
-                                                                        id: user.id,
-                                                                        fullName: user.full_name,
-                                                                        email: user.email,
-                                                                        isActive: user.is_active,
-                                                                        role: user.role,
-                                                                    });
+                                                            {canUpdate && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        setEditingUser({
+                                                                            id: user.id,
+                                                                            fullName: user.full_name,
+                                                                            email: user.email,
+                                                                            isActive: user.is_active,
+                                                                            role: user.role,
+                                                                        });
 
-                                                                    setEditErrors({});
-                                                                    setEditError("");
-                                                                    setSuccessMessage("");
-                                                                }}
-                                                                className="rounded-lg border border-blue-200 px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-50"
-                                                            >
-                                                                Edit
-                                                            </button>
+                                                                        setEditErrors({});
+                                                                        setEditError("");
+                                                                        setSuccessMessage("");
+                                                                    }}
+                                                                    disabled={
+                                                                        !isAdmin &&
+                                                                        user.role === "ADMIN"
+                                                                    }
+                                                                    title={
+                                                                        !isAdmin &&
+                                                                        user.role === "ADMIN"
+                                                                            ? "Only ADMIN can edit ADMIN accounts"
+                                                                            : "Edit user"
+                                                                    }
+                                                                    className="rounded-lg border border-blue-200 px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                                >
+                                                                    Edit
+                                                                </button>
+                                                            )}
 
-                                                            <button
-                                                                onClick={() => handleDeleteUser(user.id)}
-                                                                disabled={deletingUserId === user.id}
-                                                                className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                                            >
-                                                                {deletingUserId === user.id
-                                                                    ? "Deleting..."
-                                                                    : "Delete"}
-                                                            </button>
+                                                            {canDelete && (
+                                                                <button
+                                                                    onClick={() =>
+                                                                        handleDeleteUser(user.id)
+                                                                    }
+                                                                    disabled={
+                                                                        deletingUserId === user.id ||
+                                                                        (!isAdmin &&
+                                                                            user.role === "ADMIN")
+                                                                    }
+                                                                    title={
+                                                                        !isAdmin &&
+                                                                        user.role === "ADMIN"
+                                                                            ? "Only ADMIN can delete ADMIN accounts"
+                                                                            : "Delete user"
+                                                                    }
+                                                                    className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
+                                                                >
+                                                                    {deletingUserId === user.id
+                                                                        ? "Deleting..."
+                                                                        : "Delete"}
+                                                                </button>
+                                                            )}
 
                                                         </div>
                                                     </td>
@@ -851,15 +952,14 @@ const DashboardPage = () => {
 
             </main>
 
+            {/* ==================== CREATE USER MODAL ==================== */}
 
-            {/* Create User Modal */}
-            {isAdmin && showCreateForm && (
+            {canCreate && showCreateForm && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
 
                     <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
 
                         <div className="mb-6 flex items-center justify-between">
-
                             <h3 className="text-xl font-bold text-slate-800">
                                 Create New User
                             </h3>
@@ -871,9 +971,7 @@ const DashboardPage = () => {
                             >
                                 &times;
                             </button>
-
                         </div>
-
 
                         <form
                             onSubmit={handleCreateUser}
@@ -881,7 +979,6 @@ const DashboardPage = () => {
                             noValidate
                         >
 
-                            {/* Full Name */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Full Name
@@ -910,8 +1007,6 @@ const DashboardPage = () => {
                                 />
                             </div>
 
-
-                            {/* Email */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Email
@@ -940,8 +1035,6 @@ const DashboardPage = () => {
                                 />
                             </div>
 
-
-                            {/* Password */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Password
@@ -971,8 +1064,7 @@ const DashboardPage = () => {
                                 />
                             </div>
 
-
-                            {/* Role */}
+                            {/* Role Dropdown: ADMIN visible only to ADMIN */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Role
@@ -980,7 +1072,10 @@ const DashboardPage = () => {
 
                                 <select
                                     value={newUser.role}
-                                    disabled={rolesLoading || availableRoles.length === 0}
+                                    disabled={
+                                        rolesLoading ||
+                                        assignableRoles.length === 0
+                                    }
                                     onChange={(event) =>
                                         setNewUser((current) => ({
                                             ...current,
@@ -990,26 +1085,28 @@ const DashboardPage = () => {
                                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 >
                                     <option value="" disabled>
-                                        {rolesLoading ? "Loading roles..." : "Select a role"}
+                                        {rolesLoading
+                                            ? "Loading roles..."
+                                            : "Select a role"}
                                     </option>
-                                    {availableRoles.map((role) => (
-                                        <option key={role.id} value={role.name}>
+
+                                    {assignableRoles.map((role) => (
+                                        <option
+                                            key={role.id}
+                                            value={role.name}
+                                        >
                                             {role.name}
                                         </option>
                                     ))}
                                 </select>
                             </div>
 
-
-                            {/* API Error */}
                             {createError && (
                                 <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
                                     {createError}
                                 </p>
                             )}
 
-
-                            {/* Buttons */}
                             <div className="flex justify-end gap-3 pt-3">
 
                                 <button
@@ -1023,7 +1120,11 @@ const DashboardPage = () => {
 
                                 <button
                                     type="submit"
-                                    disabled={creating || rolesLoading || availableRoles.length === 0}
+                                    disabled={
+                                        creating ||
+                                        rolesLoading ||
+                                        assignableRoles.length === 0
+                                    }
                                     className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {creating
@@ -1032,16 +1133,14 @@ const DashboardPage = () => {
                                 </button>
 
                             </div>
-
                         </form>
-
                     </div>
                 </div>
             )}
 
+            {/* ==================== EDIT USER MODAL ==================== */}
 
-            {/* Edit User Modal */}
-            {isAdmin && editingUser && (
+            {canUpdate && editingUser && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
 
                     <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
@@ -1066,7 +1165,6 @@ const DashboardPage = () => {
                             noValidate
                         >
 
-                            {/* Full Name */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Full Name
@@ -1089,11 +1187,11 @@ const DashboardPage = () => {
                                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 />
 
-                                <FormFieldError message={editErrors.fullName} />
+                                <FormFieldError
+                                    message={editErrors.fullName}
+                                />
                             </div>
 
-
-                            {/* Email */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Email
@@ -1116,11 +1214,12 @@ const DashboardPage = () => {
                                     className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 />
 
-                                <FormFieldError message={editErrors.email} />
+                                <FormFieldError
+                                    message={editErrors.email}
+                                />
                             </div>
 
-
-                            {/* Role */}
+                            {/* Role Dropdown: ADMIN visible only to ADMIN */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Role
@@ -1128,7 +1227,10 @@ const DashboardPage = () => {
 
                                 <select
                                     value={editingUser.role}
-                                    disabled={rolesLoading || availableRoles.length === 0}
+                                    disabled={
+                                        rolesLoading ||
+                                        assignableRoles.length === 0
+                                    }
                                     onChange={(event) =>
                                         setEditingUser({
                                             ...editingUser,
@@ -1138,29 +1240,38 @@ const DashboardPage = () => {
                                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                                 >
                                     <option value="" disabled>
-                                        {rolesLoading ? "Loading roles..." : "Select a role"}
+                                        {rolesLoading
+                                            ? "Loading roles..."
+                                            : "Select a role"}
                                     </option>
-                                    {availableRoles.map((role) => (
-                                        <option key={role.id} value={role.name}>
+
+                                    {assignableRoles.map((role) => (
+                                        <option
+                                            key={role.id}
+                                            value={role.name}
+                                        >
                                             {role.name}
                                         </option>
                                     ))}
                                 </select>
                             </div>
 
-
-                            {/* Status */}
                             <div>
                                 <label className="mb-1 block text-sm font-medium text-slate-700">
                                     Account Status
                                 </label>
 
                                 <select
-                                    value={editingUser.isActive ? "true" : "false"}
+                                    value={
+                                        editingUser.isActive
+                                            ? "true"
+                                            : "false"
+                                    }
                                     onChange={(event) =>
                                         setEditingUser({
                                             ...editingUser,
-                                            isActive: event.target.value === "true",
+                                            isActive:
+                                                event.target.value === "true",
                                         })
                                     }
                                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -1170,16 +1281,12 @@ const DashboardPage = () => {
                                 </select>
                             </div>
 
-
-                            {/* API Error */}
                             {editError && (
                                 <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
                                     {editError}
                                 </p>
                             )}
 
-
-                            {/* Buttons */}
                             <div className="flex justify-end gap-3 pt-3">
 
                                 <button
@@ -1193,7 +1300,11 @@ const DashboardPage = () => {
 
                                 <button
                                     type="submit"
-                                    disabled={updating || rolesLoading || availableRoles.length === 0}
+                                    disabled={
+                                        updating ||
+                                        rolesLoading ||
+                                        assignableRoles.length === 0
+                                    }
                                     className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                     {updating
@@ -1202,7 +1313,6 @@ const DashboardPage = () => {
                                 </button>
 
                             </div>
-
                         </form>
                     </div>
                 </div>
