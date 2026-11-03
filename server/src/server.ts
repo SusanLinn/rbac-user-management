@@ -1,82 +1,71 @@
+
 import cors from "cors";
 import express from "express";
+import pinoHttp from "pino-http";
 
-import {
-    database,
-} from "./config/database.js";
+import { database } from "./config/database.js";
+import { env } from "./config/env.js";
+import { logger } from "./config/logger.js";
 
-import {
-    env,
-} from "./config/env.js";
-
-import authRoutes
-    from "./routes/authRoutes.js";
-
-import userRoutes
-    from "./routes/userRoutes.js";
-
-import {
-    sendErrorResponse,
-} from "./utils/response.js";
-
-import { errorHandler } from "./middleware/errorHandler.js";
-
+import authRoutes from "./routes/authRoutes.js";
+import userRoutes from "./routes/userRoutes.js";
 import roleRoutes from "./routes/roleRoutes.js";
 
-const app =
-    express();
+import { errorHandler } from "./middleware/errorHandler.js";
+import { sendErrorResponse } from "./utils/response.js";
 
+const app = express();
 
+// HTTP Request Logging
 app.use(
-    cors()
+    pinoHttp({
+        logger,
+
+        autoLogging: {
+            ignore: (request) =>
+                request.url === "/api/health",
+        },
+
+        serializers: {
+            req: (request) => ({
+                method: request.method,
+                url: request.url,
+            }),
+
+            res: (response) => ({
+                statusCode: response.statusCode,
+            }),
+        },
+    })
 );
 
+// CORS Middleware
+app.use(cors());
 
-app.use(
-    express.json()
-);
-
+// JSON Middleware
+app.use(express.json());
 
 // Health Check
 app.get(
     "/api/health",
-    async (
-        _request,
-        response
-    ) => {
-
+    async (_request, response) => {
         try {
-
-            const result =
-                await database.query(
-                    "SELECT NOW() AS current_time"
-                );
-
-
-            return response
-                .status(
-                    200
-                )
-                .json({
-                    success: true,
-
-                    message:
-                        "RBAC API and database are running",
-
-                    databaseTime:
-                        result.rows[0]
-                            .current_time,
-                });
-
-        } catch (
-            error
-        ) {
-
-            console.error(
-                "Database connection failed:",
-                error
+            const result = await database.query(
+                "SELECT NOW() AS current_time"
             );
 
+            return response.status(200).json({
+                success: true,
+                message:
+                    "RBAC API and database are running",
+                databaseTime:
+                    result.rows[0].current_time,
+            });
+        } catch (error) {
+            logger.error(
+                { err: error },
+                "Database connection failed"
+            );
 
             return sendErrorResponse(
                 response,
@@ -87,34 +76,34 @@ app.get(
     }
 );
 
-
 // Auth Routes
-app.use(
-    "/api/auth",
-    authRoutes
-);
-
+app.use("/api/auth", authRoutes);
 
 // User Routes
-app.use(
-    "/api/users",
-    userRoutes
-);
+app.use("/api/users", userRoutes);
 
 // Role Management Routes
 app.use("/api/roles", roleRoutes);
 
-// Error handling middleware
+// Error Handling Middleware
 app.use(errorHandler);
 
-
 // Start Server
-app.listen(
-    env.port,
-    () => {
+app.listen(env.port, () => {
+    logger.info(
+        { port: env.port },
+        "RBAC API server started"
+    );
+});
 
-        console.log(
-            `Server running on http://localhost:${env.port}`
-        );
-    }
-);
+
+// Before — Console Logging
+// console.log(
+//     `Server running on http://localhost:${env.port}`
+// );
+
+// After — Pino Logging
+// logger.info(
+//     { port: env.port },
+//     "RBAC API server started"
+// );

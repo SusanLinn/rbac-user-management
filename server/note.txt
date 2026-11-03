@@ -157,3 +157,21 @@ response	Client ဆီ Response ပြန်ပို့ရန်
 next	နောက် Middleware သို့ ဆက်သွားရန်
 
 ပုံမှန် Middleware နဲ့မတူဘဲ Error Middleware မှာ Parameter ၄ ခု မဖြစ်မနေရှိရပါတယ်။
+
+1. User Login
+
+Email + Password
+
+2. Backend
+
+JWT Payload + JWT_SECRET
+
+3. Signed JWT Token
+
+Frontend ကို ပေးပို့တယ်
+
+4. Protected API Request
+
+Backend က JWT_SECRET နဲ့ Verify လုပ်တယ်
+
+Valid Token → Continue

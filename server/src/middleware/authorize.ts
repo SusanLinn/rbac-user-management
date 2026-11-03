@@ -1,11 +1,14 @@
+
 import type {
     NextFunction,
     Response,
 } from "express";
 
+import { logger } from "../config/logger.js";
+
 import {
-    database,
-} from "../config/database.js";
+    getUserPermissions,
+} from "../services/permissionService.js";
 
 import {
     sendErrorResponse,
@@ -15,25 +18,19 @@ import type {
     AuthenticatedRequest,
 } from "./authenticate.js";
 
+// Check whether the authenticated user
+// currently has the required permission.
 
-export const authorize = (
-    requiredPermission: string
-) => {
-
+export const authorize = (requiredPermission: string) => {
     return async (
         request: AuthenticatedRequest,
         response: Response,
         next: NextFunction
     ) => {
-
         try {
-
-            const userId =
-                request.user?.userId;
-
+            const userId = request.user?.userId;
 
             if (!userId) {
-
                 return sendErrorResponse(
                     response,
                     401,
@@ -41,31 +38,27 @@ export const authorize = (
                 );
             }
 
+            // Fetch current permissions from PostgreSQL
+            // using Prisma.
+            const permissions = await getUserPermissions(
+                userId
+            );
 
-            const permissionResult =
-                await database.query(
-                    `
-                    SELECT p.name
-                    FROM user_roles ur
-                    JOIN roles r
-                        ON r.id = ur.role_id
-                    JOIN role_permissions rp
-                        ON rp.role_id = r.id
-                    JOIN permissions p
-                        ON p.id = rp.permission_id
-                    WHERE ur.user_id = $1
-                      AND p.name = $2
-                    `,
-                    [
+            const hasPermission = permissions.includes(
+                requiredPermission
+            );
+
+            if (!hasPermission) {
+                logger.warn(
+                    {
+                        event: "PERMISSION_DENIED",
                         userId,
                         requiredPermission,
-                    ]
+                        method: request.method,
+                        path: request.originalUrl,
+                    },
+                    "Permission denied"
                 );
-
-
-            if (
-                permissionResult.rows.length === 0
-            ) {
 
                 return sendErrorResponse(
                     response,
@@ -74,18 +67,16 @@ export const authorize = (
                 );
             }
 
-
             next();
 
-        } catch (
-            error
-        ) {
-
-            console.error(
-                "Authorization failed:",
-                error
+        } catch (error) {
+            logger.error(
+                {
+                    err: error,
+                    event: "AUTHORIZATION_ERROR",
+                },
+                "Authorization failed"
             );
-
 
             return sendErrorResponse(
                 response,

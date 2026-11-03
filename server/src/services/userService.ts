@@ -1,71 +1,101 @@
 
-import {
-    database,
-} from "../config/database.js";
+import { prisma } from "../config/prisma.js";
+import { hashPassword } from "../utils/password.js";
 
-import {
-    hashPassword,
-} from "../utils/password.js";
+// ==================== TYPES ====================
 
-
-export const getAllUsers = async () => {
-
-    const result =
-        await database.query(
-            `
-            SELECT
-                u.id,
-                u.full_name,
-                u.email,
-                u.is_active,
-                u.created_at,
-                u.updated_at,
-                r.name AS role
-            FROM users u
-            LEFT JOIN user_roles ur
-                ON ur.user_id = u.id
-            LEFT JOIN roles r
-                ON r.id = ur.role_id
-            ORDER BY u.created_at DESC
-            `
-        );
-
-
-    return result.rows;
+type UserWithRole = {
+    id: string;
+    full_name: string;
+    email: string;
+    is_active: boolean;
+    created_at: Date;
+    updated_at: Date;
+    role: string | null;
 };
 
+// ==================== GET ALL USERS ====================
 
-export const getUserById = async (
-    id: string
-) => {
+export const getAllUsers = async (): Promise<UserWithRole[]> => {
+    const users = await prisma.users.findMany({
+        select: {
+            id: true,
+            full_name: true,
+            email: true,
+            is_active: true,
+            created_at: true,
+            updated_at: true,
+            user_roles: {
+                select: {
+                    roles: {
+                        select: {
+                            name: true,
+                        },
+                    },
+                },
+            },
+        },
+        orderBy: {
+            created_at: "desc",
+        },
+    });
 
-    const result =
-        await database.query(
-            `
-            SELECT
-                u.id,
-                u.full_name,
-                u.email,
-                u.is_active,
-                u.created_at,
-                u.updated_at,
-                r.name AS role
-            FROM users u
-            LEFT JOIN user_roles ur
-                ON ur.user_id = u.id
-            LEFT JOIN roles r
-                ON r.id = ur.role_id
-            WHERE u.id = $1
-            `,
-            [
-                id,
-            ]
-        );
+    return users.flatMap(
+        (user): UserWithRole[] => {
+            const { user_roles, ...details } = user;
 
+            if (user_roles.length === 0) {
+                return [{
+                    ...details,
+                    role: null,
+                }];
+            }
 
-    return result.rows[0];
+            return user_roles.map((item) => ({
+                ...details,
+                role: item.roles.name,
+            }));
+        }
+    );
 };
 
+// ==================== GET USER BY ID ====================
+
+export const getUserById = async (id: string) => {
+    const user = await prisma.users.findUnique({
+        where: { id },
+        select: {
+            id: true,
+            full_name: true,
+            email: true,
+            is_active: true,
+            created_at: true,
+            updated_at: true,
+            user_roles: {
+                select: {
+                    roles: {
+                        select: {
+                            name: true,
+                        },
+                    },
+                },
+            },
+        },
+    });
+
+    if (!user) {
+        return undefined;
+    }
+
+    const { user_roles, ...details } = user;
+
+    return {
+        ...details,
+        role: user_roles[0]?.roles.name ?? null,
+    };
+};
+
+// ==================== CREATE USER ====================
 
 export const createUser = async (
     fullName: string,
@@ -73,122 +103,48 @@ export const createUser = async (
     password: string,
     role: string
 ) => {
+    const hashedPassword = await hashPassword(password);
 
-    const client =
-        await database.connect();
+    return prisma.$transaction(async (tx) => {
+        const selectedRole = await tx.roles.findUnique({
+            where: { name: role },
+            select: { id: true },
+        });
 
-
-    try {
-
-        await client.query(
-            "BEGIN"
-        );
-
-
-        const hashedPassword =
-            await hashPassword(
-                password
-            );
-
-
-        const userResult =
-            await client.query(
-                `
-                INSERT INTO users (
-                    full_name,
-                    email,
-                    password_hash
-                )
-                VALUES ($1, $2, $3)
-                RETURNING
-                    id,
-                    full_name,
-                    email,
-                    is_active,
-                    created_at
-                `,
-                [
-                    fullName,
-                    email,
-                    hashedPassword,
-                ]
-            );
-
-
-        const user =
-            userResult.rows[0];
-
-
-        const roleResult =
-            await client.query(
-                `
-                SELECT id
-                FROM roles
-                WHERE name = $1
-                `,
-                [
-                    role,
-                ]
-            );
-
-
-        if (
-            roleResult.rows.length === 0
-        ) {
-
-            await client.query(
-                "ROLLBACK"
-            );
-
+        if (!selectedRole) {
             return null;
         }
 
+        const user = await tx.users.create({
+            data: {
+                full_name: fullName,
+                email,
+                password_hash: hashedPassword,
+            },
+            select: {
+                id: true,
+                full_name: true,
+                email: true,
+                is_active: true,
+                created_at: true,
+            },
+        });
 
-        const roleId =
-            roleResult.rows[0].id;
-
-
-        await client.query(
-            `
-            INSERT INTO user_roles (
-                user_id,
-                role_id
-            )
-            VALUES ($1, $2)
-            `,
-            [
-                user.id,
-                roleId,
-            ]
-        );
-
-
-        await client.query(
-            "COMMIT"
-        );
-
+        await tx.user_roles.create({
+            data: {
+                user_id: user.id,
+                role_id: selectedRole.id,
+            },
+        });
 
         return {
             ...user,
             role,
         };
-
-    } catch (
-        error
-    ) {
-
-        await client.query(
-            "ROLLBACK"
-        );
-
-        throw error;
-
-    } finally {
-
-        client.release();
-    }
+    });
 };
 
+// ==================== UPDATE USER ====================
 
 export const updateUser = async (
     id: string,
@@ -197,160 +153,82 @@ export const updateUser = async (
     isActive: boolean,
     role: string
 ) => {
+    return prisma.$transaction(async (tx) => {
+        const existingUser = await tx.users.findUnique({
+            where: { id },
+            select: { id: true },
+        });
 
-    const client =
-        await database.connect();
-
-
-    try {
-
-        await client.query(
-            "BEGIN"
-        );
-
-
-        const userResult =
-            await client.query(
-                `
-                UPDATE users
-                SET
-                    full_name = $1,
-                    email = $2,
-                    is_active = $3,
-                    updated_at = NOW()
-                WHERE id = $4
-                RETURNING
-                    id,
-                    full_name,
-                    email,
-                    is_active,
-                    created_at,
-                    updated_at
-                `,
-                [
-                    fullName,
-                    email,
-                    isActive,
-                    id,
-                ]
-            );
-
-
-        if (
-            userResult.rows.length === 0
-        ) {
-
-            await client.query(
-                "ROLLBACK"
-            );
-
+        if (!existingUser) {
             return null;
         }
 
+        const selectedRole = await tx.roles.findUnique({
+            where: { name: role },
+            select: { id: true },
+        });
 
-        const roleResult =
-            await client.query(
-                `
-                SELECT id
-                FROM roles
-                WHERE name = $1
-                `,
-                [
-                    role,
-                ]
-            );
-
-
-        if (
-            roleResult.rows.length === 0
-        ) {
-
-            await client.query(
-                "ROLLBACK"
-            );
-
-            return {
-                invalidRole: true,
-            };
+        if (!selectedRole) {
+            return { invalidRole: true };
         }
 
+        const user = await tx.users.update({
+            where: { id },
+            data: {
+                full_name: fullName,
+                email,
+                is_active: isActive,
+                updated_at: new Date(),
+            },
+            select: {
+                id: true,
+                full_name: true,
+                email: true,
+                is_active: true,
+                created_at: true,
+                updated_at: true,
+            },
+        });
 
-        const roleId =
-            roleResult.rows[0].id;
+        await tx.user_roles.deleteMany({
+            where: { user_id: id },
+        });
 
-
-        await client.query(
-            `
-            DELETE FROM user_roles
-            WHERE user_id = $1
-            `,
-            [
-                id,
-            ]
-        );
-
-
-        await client.query(
-            `
-            INSERT INTO user_roles (
-                user_id,
-                role_id
-            )
-            VALUES ($1, $2)
-            `,
-            [
-                id,
-                roleId,
-            ]
-        );
-
-
-        await client.query(
-            "COMMIT"
-        );
-
+        await tx.user_roles.create({
+            data: {
+                user_id: id,
+                role_id: selectedRole.id,
+            },
+        });
 
         return {
-            ...userResult.rows[0],
+            ...user,
             role,
         };
-
-    } catch (
-        error
-    ) {
-
-        await client.query(
-            "ROLLBACK"
-        );
-
-        throw error;
-
-    } finally {
-
-        client.release();
-    }
+    });
 };
 
+// ==================== DELETE USER ====================
 
-export const deleteUser = async (
-    id: string
-) => {
+export const deleteUser = async (id: string) => {
+    return prisma.$transaction(async (tx) => {
+        const user = await tx.users.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                full_name: true,
+                email: true,
+            },
+        });
 
-    const result =
-        await database.query(
-            `
-            DELETE FROM users
-            WHERE id = $1
-            RETURNING
-                id,
-                full_name,
-                email
-            `,
-            [
-                id,
-            ]
-        );
+        if (!user) {
+            return undefined;
+        }
 
+        await tx.users.delete({
+            where: { id },
+        });
 
-    return result.rows[0];
+        return user;
+    });
 };

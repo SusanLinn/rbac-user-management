@@ -1,6 +1,5 @@
-
-import { randomUUID } from "node:crypto";
-import { database } from "../config/database.js";
+import { prisma } from "../config/prisma.js";
+import { Prisma } from "../generated/prisma/client.js";
 
 const allowedPermissions = [
     "users.read",
@@ -9,27 +8,29 @@ const allowedPermissions = [
     "users.delete",
 ];
 
-export const getAllRoles = async () => {
-    const result = await database.query(`
-        SELECT
-            r.id,
-            r.name,
-            r.description,
-            COALESCE(
-                array_agg(p.name)
-                FILTER (WHERE p.name IS NOT NULL),
-                '{}'
-            ) AS permissions
-        FROM roles r
-        LEFT JOIN role_permissions rp
-            ON rp.role_id = r.id
-        LEFT JOIN permissions p
-            ON p.id = rp.permission_id
-        GROUP BY r.id, r.name, r.description
-        ORDER BY r.name
-    `);
+const prepareRole = (name: string, description: string, permissions: string[]) => ({
+    roleName: name.trim().toUpperCase(),
+    roleDescription: description.trim(),
+    selectedPermissions: [...new Set(permissions)],
+});
 
-    return result.rows;
+export const getAllRoles = async () => {
+    const roles = await prisma.roles.findMany({
+        select: {
+            id: true,
+            name: true,
+            description: true,
+            role_permissions: {
+                select: { permissions: { select: { name: true } } },
+            },
+        },
+        orderBy: { name: "asc" },
+    });
+
+    return roles.map(({ role_permissions, ...role }) => ({
+        ...role,
+        permissions: role_permissions.map((item) => item.permissions.name),
+    }));
 };
 
 export const createRole = async (
@@ -37,83 +38,43 @@ export const createRole = async (
     description: string,
     permissions: string[]
 ) => {
-    const client = await database.connect();
+    const { roleName, roleDescription, selectedPermissions } = prepareRole(name, description, permissions);
+    if (!roleName) throw new Error("Role name is required");
+    if (selectedPermissions.some((permission) => !allowedPermissions.includes(permission))) {
+        throw new Error("Invalid permission");
+    }
 
-    try {
-        await client.query("BEGIN");
+    return prisma.$transaction(async (tx) => {
+        const existingRole = await tx.roles.findFirst({
+            where: { name: { equals: roleName, mode: "insensitive" } },
+            select: { id: true },
+        });
+        if (existingRole) throw new Error("Role already exists");
 
-        const roleName = name.trim().toUpperCase();
-        const selectedPermissions = [...new Set(permissions)];
-
-        if (!roleName) {
-            throw new Error("Role name is required");
-        }
-
-        if (
-            selectedPermissions.some(
-                (permission) =>
-                    !allowedPermissions.includes(permission)
-            )
-        ) {
-            throw new Error("Invalid permission");
-        }
-
-        const existingRole = await client.query(
-            "SELECT id FROM roles WHERE LOWER(name) = LOWER($1)",
-            [roleName]
-        );
-
-        if (existingRole.rows.length > 0) {
-            throw new Error("Role already exists");
-        }
-
-        const permissionResult = await client.query(
-            "SELECT id FROM permissions WHERE name = ANY($1::text[])",
-            [selectedPermissions]
-        );
-
-        if (
-            permissionResult.rows.length !==
-            selectedPermissions.length
-        ) {
+        const permissionRecords = await tx.permissions.findMany({
+            where: { name: { in: selectedPermissions } },
+            select: { id: true, name: true },
+        });
+        if (permissionRecords.length !== selectedPermissions.length) {
             throw new Error("Permission not found in database");
         }
 
-        const roleId = randomUUID();
+        const role = await tx.roles.create({
+            data: {
+                name: roleName,
+                description: roleDescription,
+                role_permissions: {
+                    create: permissionRecords.map((permission) => ({
+                        permissions: { connect: { id: permission.id } },
+                    })),
+                },
+            },
+            select: { id: true, name: true, description: true },
+        });
 
-        await client.query(
-            `INSERT INTO roles (id, name, description)
-             VALUES ($1, $2, $3)`,
-            [roleId, roleName, description.trim()]
-        );
-
-        for (const permission of permissionResult.rows) {
-            await client.query(
-                `INSERT INTO role_permissions
-                 (role_id, permission_id)
-                 VALUES ($1, $2)`,
-                [roleId, permission.id]
-            );
-        }
-
-        await client.query("COMMIT");
-
-        return {
-            id: roleId,
-            name: roleName,
-            description: description.trim(),
-            permissions: selectedPermissions,
-        };
-
-    } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-    } finally {
-        client.release();
-    }
-
+        return { ...role, permissions: selectedPermissions };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 };
-
 
 export const updateRole = async (
     id: string,
@@ -121,100 +82,54 @@ export const updateRole = async (
     description: string,
     permissions: string[]
 ) => {
-    const client = await database.connect();
+    const { roleName, roleDescription, selectedPermissions } = prepareRole(name, description, permissions);
 
-    try {
-        await client.query("BEGIN");
-
-        const existingRole = await client.query(
-            "SELECT name FROM roles WHERE id = $1 FOR UPDATE",
-            [id]
-        );
-
-        if (existingRole.rows.length === 0) {
-            await client.query("ROLLBACK");
-            return null;
-        }
-
-        if (existingRole.rows[0].name.toUpperCase() === "ADMIN") {
+    return prisma.$transaction(async (tx) => {
+        const existingRole = await tx.roles.findUnique({
+            where: { id },
+            select: { id: true, name: true },
+        });
+        if (!existingRole) return null;
+        if (existingRole.name.toUpperCase() === "ADMIN") {
             throw new Error("System roles cannot be edited");
         }
-
-        const roleName = name.trim().toUpperCase();
-        const selectedPermissions = [...new Set(permissions)];
-
-        if (!roleName || roleName === "ADMIN") {
-            throw new Error("Invalid role name");
-        }
-
-        if (
-            selectedPermissions.some(
-                (permission) => !allowedPermissions.includes(permission)
-            )
-        ) {
+        if (!roleName || roleName === "ADMIN") throw new Error("Invalid role name");
+        if (selectedPermissions.some((permission) => !allowedPermissions.includes(permission))) {
             throw new Error("Invalid permission");
         }
 
-        const duplicate = await client.query(
-            `SELECT id FROM roles
-             WHERE LOWER(name) = LOWER($1) AND id <> $2`,
-            [roleName, id]
-        );
+        const duplicate = await tx.roles.findFirst({
+            where: {
+                id: { not: id },
+                name: { equals: roleName, mode: "insensitive" },
+            },
+            select: { id: true },
+        });
+        if (duplicate) throw new Error("Role already exists");
 
-        if (duplicate.rows.length > 0) {
-            throw new Error("Role already exists");
-        }
-
-        const permissionResult = await client.query(
-            "SELECT id FROM permissions WHERE name = ANY($1::text[])",
-            [selectedPermissions]
-        );
-
-        if (permissionResult.rows.length !== selectedPermissions.length) {
+        const permissionRecords = await tx.permissions.findMany({
+            where: { name: { in: selectedPermissions } },
+            select: { id: true, name: true },
+        });
+        if (permissionRecords.length !== selectedPermissions.length) {
             throw new Error("Permission not found in database");
         }
 
-        await client.query(
-            `UPDATE roles
-             SET name = $1, description = $2
-             WHERE id = $3`,
-            [roleName, description.trim(), id]
-        );
-
-        await client.query(
-            "DELETE FROM role_permissions WHERE role_id = $1",
-            [id]
-        );
-
-        for (const permission of permissionResult.rows) {
-            await client.query(
-                `INSERT INTO role_permissions (role_id, permission_id)
-                 VALUES ($1, $2)`,
-                [id, permission.id]
-            );
-        }
-
-        await client.query("COMMIT");
-
-        console.info("[ROLE_UPDATED]", {
-            roleId: id,
-            roleName,
-            permissions: selectedPermissions,
-            updatedAt: new Date().toISOString(),
+        const role = await tx.roles.update({
+            where: { id },
+            data: {
+                name: roleName,
+                description: roleDescription,
+                role_permissions: {
+                    deleteMany: {},
+                    create: permissionRecords.map((permission) => ({
+                        permissions: { connect: { id: permission.id } },
+                    })),
+                },
+            },
+            select: { id: true, name: true, description: true },
         });
 
-        return {
-            id,
-            name: roleName,
-            description: description.trim(),
-            permissions: selectedPermissions,
-        };
-
-    } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-    } finally {
-        client.release();
-    }
+        return { ...role, permissions: selectedPermissions };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 };
-

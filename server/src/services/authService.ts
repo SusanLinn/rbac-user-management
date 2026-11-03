@@ -1,5 +1,5 @@
 
-import { database } from "../config/database.js";
+import { prisma } from "../config/prisma.js";
 import { comparePassword } from "../utils/password.js";
 import { generateToken } from "../utils/token.js";
 
@@ -7,33 +7,34 @@ export const loginUser = async (
     email: string,
     password: string
 ) => {
-    const userResult = await database.query(
-        `
-        SELECT
-            u.id,
-            u.full_name,
-            u.email,
-            u.password_hash,
-            u.is_active,
-            r.name AS role
-        FROM users u
-        INNER JOIN user_roles ur
-            ON ur.user_id = u.id
-        INNER JOIN roles r
-            ON r.id = ur.role_id
-        WHERE u.email = $1
-        `,
-        [email]
-    );
+    const user = await prisma.users.findUnique({
+        where: {
+            email,
+        },
+        select: {
+            id: true,
+            full_name: true,
+            email: true,
+            password_hash: true,
+            is_active: true,
+            user_roles: {
+                select: {
+                    roles: {
+                        select: {
+                            name: true,
+                        },
+                    },
+                },
+            },
+        },
+    });
 
-    if (userResult.rows.length === 0) {
+    if (!user || user.user_roles.length === 0) {
         return {
             success: false,
             reason: "INVALID_CREDENTIALS",
         };
     }
-
-    const user = userResult.rows[0];
 
     if (!user.is_active) {
         return {
@@ -54,9 +55,11 @@ export const loginUser = async (
         };
     }
 
+    const role = user.user_roles[0]?.roles.name;
+
     if (
-        typeof user.role !== "string" ||
-        !user.role.trim()
+        typeof role !== "string" ||
+        !role.trim()
     ) {
         return {
             success: false,
@@ -67,7 +70,7 @@ export const loginUser = async (
     const token = generateToken(
         user.id,
         user.email,
-        user.role
+        role
     );
 
     return {
